@@ -1,0 +1,26 @@
+{
+  "name": "eqm-miner",
+  "version": "1.0.0",
+  "description": "Equium ($EQM) CPU Miner with Anti-MEV (Jito Bundle)",
+  "type": "module",
+  "scripts": {
+    "mine": "tsx src/miner.ts",
+    "setup": "tsx src/setup-wallet.ts",
+    "balance": "tsx src/check-balance.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/spl-token": "^0.4.12",
+    "@solana/web3.js": "^1.98.0",
+    "blake2b": "^2.1.4",
+    "blake2b-wasm": "^2.4.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.7",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

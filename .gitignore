@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.key
+# Native solver compiled artifacts
+native/*.so
+native/*.dylib
+native/eqm_worker
+native/equihash_test
