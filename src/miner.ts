@@ -17,7 +17,7 @@ import { buildInputBlock, hashUnderTarget, solutionHash } from "./equihash.js";
 import { fetchConfig, buildMineInstruction, EquiumConfigState } from "./program.js";
 import { sendWithJitoBundle, sendDirectTransaction } from "./jito.js";
 import { EQM_MINT } from "./constants.js";
-import { initSolver, solveEquihashMulti } from "./solver-native.js";
+import { initSolver, solveEquihashMulti, shutdownSolver } from "./solver-native.js";
 
 config(); // Load .env
 
@@ -25,8 +25,8 @@ config(); // Load .env
 const RPC_URL = process.env.RPC_URL || "https://api.mainnet-beta.solana.com";
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const JITO_TIP_LAMPORTS = parseInt(process.env.JITO_TIP_LAMPORTS || "100000");
-const MAX_ATTEMPTS = parseInt(process.env.MAX_ATTEMPTS || "200");
-const ROUND_DELAY_MS = parseInt(process.env.ROUND_DELAY_MS || "500");
+const MAX_ATTEMPTS = parseInt(process.env.MAX_ATTEMPTS || "5000");
+const ROUND_DELAY_MS = parseInt(process.env.ROUND_DELAY_MS || "100");
 const USE_JITO = process.env.USE_JITO !== "false"; // default true
 const NUM_THREADS = parseInt(process.env.THREADS || "4");
 
@@ -65,6 +65,9 @@ function printStats() {
 /**
  * Solve Equihash using native C multi-threaded solver
  * Falls back to JS if native not available.
+ *
+ * Continuous mode: runs until solution found or challenge changes.
+ * Checks challenge freshness every batch.
  */
 async function solveBlock(
   currentChallenge: Buffer,
@@ -76,16 +79,45 @@ async function solveBlock(
 ): Promise<{ nonce: Buffer; solutionIndices: Buffer } | null> {
   const input = buildInputBlock(currentChallenge, minerPubkey, blockHeight);
 
-  const result = await solveEquihashMulti(input, target, NUM_THREADS, MAX_ATTEMPTS);
+  // Run in batches of MAX_ATTEMPTS, loop until found or challenge stale
+  const maxBatches = 100; // safety cap: 100 batches × 5000 = 500,000 nonces max
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const batchStart = Date.now();
+    const result = await solveEquihashMulti(input, target, NUM_THREADS, MAX_ATTEMPTS);
 
-  if (result) {
-    totalAttempts += result.attempts;
-    return { nonce: result.nonce, solutionIndices: result.solution };
+    if (result) {
+      totalAttempts += result.attempts;
+      const elapsed = Date.now() - batchStart;
+      const hps = result.hps || (result.attempts / (elapsed / 1000));
+      process.stdout.write(`\r  · batch #${batch + 1}  ${result.attempts} tries  ${hps.toFixed(0)} H/s  `);
+      return { nonce: result.nonce, solutionIndices: result.solution };
+    }
+
+    totalAttempts += MAX_ATTEMPTS;
+    const elapsed = (Date.now() - batchStart) / 1000;
+    const hps = MAX_ATTEMPTS / elapsed;
+    process.stdout.write(
+      `\r  · batch #${batch + 1}  ${MAX_ATTEMPTS * (batch + 1)} tries  ${hps.toFixed(0)} H/s  `
+    );
+
+    // Check if challenge is still fresh (someone else may have won)
+    try {
+      const freshState = await fetchConfig(connection!);
+      if (freshState.blockHeight !== blockHeight) {
+        console.log(`\n  ⚠ Challenge stale (block advanced to ${freshState.blockHeight})`);
+        return null;
+      }
+    } catch {
+      // RPC error, continue mining
+    }
   }
 
-  totalAttempts += MAX_ATTEMPTS;
+  console.log("");
   return null;
 }
+
+// Connection reference for stale-check inside solveBlock
+let connection: Connection | null = null;
 
 /**
  * Main mining loop
@@ -101,10 +133,11 @@ async function mine() {
   }
 
   // Setup connection and wallet
-  const connection = new Connection(RPC_URL, {
+  const conn = new Connection(RPC_URL, {
     commitment: "confirmed",
     confirmTransactionInitialTimeout: 60_000,
   });
+  connection = conn; // Set module-level ref for stale-check
 
   let keypair: Keypair;
   try {
@@ -269,7 +302,19 @@ function sleep(ms: number): Promise<void> {
 }
 
 // Run
+process.on("SIGINT", () => {
+  console.log("\n\n🛑 Shutting down gracefully...");
+  shutdownSolver();
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  shutdownSolver();
+  process.exit(0);
+});
+
 mine().catch((err) => {
   console.error("Fatal error:", err);
+  shutdownSolver();
   process.exit(1);
 });
